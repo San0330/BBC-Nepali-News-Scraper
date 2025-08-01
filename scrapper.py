@@ -23,7 +23,7 @@ start_url = [
     {
         "category": "विज्ञान तथा प्रविधि",
         "url": "https://www.bbc.com/nepali/topics/c9de5jl3967t?page={}",
-        "page": 29
+        "page": 30
     }
 ]
 
