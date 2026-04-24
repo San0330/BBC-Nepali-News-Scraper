@@ -1,8 +1,12 @@
+import re
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import time
 from urllib.parse import urljoin
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; research-scraper/1.0)"}
+BBC_BASE = "https://www.bbc.com"
 
 start_url = [
     {
@@ -48,7 +52,7 @@ for url_config in start_url:
         url = base_url.format(page_number)
         print(f"\n🔍 Crawling: {url}")
         try:
-            res = requests.get(url)
+            res = requests.get(url, headers=HEADERS)
             soup = BeautifulSoup(res.text, 'html.parser')
         except Exception as e:
             print(f"❌ Failed to fetch page {url}: {e}")
@@ -68,7 +72,7 @@ for url_config in start_url:
                 print(f"❌ Skipping: {link}")
                 continue
 
-            full_url = link
+            full_url = urljoin(BBC_BASE, link)
 
             if full_url in seen:
                 print(f"🔁 Already exists: {full_url}")
@@ -81,8 +85,12 @@ for url_config in start_url:
 
             try:
                 print(f"📰 Scraping: {full_url}")
-                art_res = requests.get(full_url)
+                art_res = requests.get(full_url, headers=HEADERS)
                 art_soup = BeautifulSoup(art_res.text, 'html.parser')
+
+                # Remove hidden accessibility elements before text extraction
+                for hidden in art_soup.find_all('span', class_='off-screen'):
+                    hidden.decompose()
 
                 article_id = link.split('/')[-1]
                 title = art_soup.find('h1').text.strip()
@@ -93,7 +101,7 @@ for url_config in start_url:
                 time_tags = [t for t in art_soup.find_all('time') if not t.find_parent('figure')]
                 time_tag = time_tags[0] if time_tags else None
                 if time_tag and time_tag.get('datetime'):
-                    date = time_tag['datetime']
+                    date = time_tag['datetime'][:10]
 
                 # Extract summary
                 paragraphs = art_soup.find_all('p')
@@ -119,11 +127,14 @@ for url_config in start_url:
                             filtered_paragraphs.append(p)
 
                 full_text = ' '.join([p.text.strip() for p in filtered_paragraphs])
-                
+
                 # Remove everything after "बीबीसी न्यूज नेपाली यूट्यूबमा पनि छ।" if found
                 cutoff_text = "बीबीसी न्यूज नेपाली यूट्यूबमा पनि छ।"
                 if cutoff_text in full_text:
                     full_text = full_text.split(cutoff_text)[0].strip()
+
+                # Strip any remaining "End of content" artifacts
+                full_text = re.sub(r'\s*End of content\s*', ' ', full_text).strip()
 
                 # Add to DataFrame
                 new_row = {
