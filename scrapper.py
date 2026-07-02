@@ -41,6 +41,7 @@ except FileNotFoundError:
 
 # Track already seen URLs
 seen = set(df['url'].tolist())
+pending_rows = []
 
 # Start crawling
 for url_config in start_url:
@@ -52,10 +53,13 @@ for url_config in start_url:
         url = base_url.format(page_number)
         print(f"\n🔍 Crawling: {url}")
         try:
-            res = requests.get(url, headers=HEADERS)
+            res = requests.get(url, headers=HEADERS, timeout=10)
+            res.raise_for_status()
+            res.encoding = res.apparent_encoding
             soup = BeautifulSoup(res.text, 'html.parser')
-        except Exception as e:
+        except requests.RequestException as e:
             print(f"❌ Failed to fetch page {url}: {e}")
+            time.sleep(1)
             continue
 
         grid = soup.find('div', attrs={'data-testid': 'curation-grid-normal'})
@@ -85,15 +89,23 @@ for url_config in start_url:
 
             try:
                 print(f"📰 Scraping: {full_url}")
-                art_res = requests.get(full_url, headers=HEADERS)
+                art_res = requests.get(full_url, headers=HEADERS, timeout=10)
+                art_res.raise_for_status()
+                art_res.encoding = art_res.apparent_encoding
                 art_soup = BeautifulSoup(art_res.text, 'html.parser')
 
                 # Remove hidden accessibility elements before text extraction
                 for hidden in art_soup.find_all('span', class_='off-screen'):
                     hidden.decompose()
 
-                article_id = link.split('/')[-1]
-                title = art_soup.find('h1').text.strip()
+                article_id = link.rstrip('/').split('?')[0].split('/')[-1]
+
+                h1 = art_soup.find('h1')
+                if not h1:
+                    print(f"⚠️ No title found, skipping: {full_url}")
+                    time.sleep(1)
+                    continue
+                title = h1.text.strip()
 
                 # Extract date
                 date = ''
@@ -106,24 +118,24 @@ for url_config in start_url:
                 # Extract summary
                 paragraphs = art_soup.find_all('p')
                 summary = 'Summary not found'
-                for i, p in enumerate(paragraphs):
-                    if p.find('b'):
-                        
-                        # Apply the same filtering conditions to summary extraction
-                        if not p.find_parent('figure') and not p.find_parent('footer'):
-                            if p.get('id') != 'end-of-recommendations':                                
-                                potential_summary = p.text.strip()
-                                # Skip if summary starts with social media promotion text
-                                if not potential_summary.startswith("बीबीसी न्यूज नेपाली यूट्यूबमा पनि छ"):
-                                    summary = potential_summary
-                                    paragraphs.pop(i)
-                                    break
+                summary_para = None
+                for p in paragraphs:
+                    if p.find('b') and not p.find_parent('figure') and not p.find_parent('footer'):
+                        if p.get('id') != 'end-of-recommendations':
+                            potential_summary = p.text.strip()
+                            # Skip if summary starts with social media promotion text
+                            if not potential_summary.startswith("बीबीसी न्यूज नेपाली यूट्यूबमा पनि छ"):
+                                summary = potential_summary
+                                summary_para = p
+                                break
 
                 # Filter main content paragraphs
                 filtered_paragraphs = []
                 for p in paragraphs:
+                    if p is summary_para:
+                        continue
                     if not p.find_parent('figure') and not p.find_parent('footer'):
-                        if p.get('id') != 'end-of-recommendations':                            
+                        if p.get('id') != 'end-of-recommendations':
                             filtered_paragraphs.append(p)
 
                 full_text = ' '.join([p.text.strip() for p in filtered_paragraphs])
@@ -146,19 +158,22 @@ for url_config in start_url:
                     'summary': summary,
                     'text': full_text
                 }
-                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                pending_rows.append(new_row)
                 seen.add(full_url)
 
-                # Save to CSV every 50 rows
-                if len(df) % 50 == 0:
+                # Flush to df/CSV every 50 rows
+                if len(pending_rows) >= 50:
+                    df = pd.concat([df, pd.DataFrame(pending_rows)], ignore_index=True)
+                    pending_rows = []
                     df.to_csv(csv_filename, index=False)
                     print(f"💾 Saved {len(df)} articles to {csv_filename}")
 
-                time.sleep(1)
-
-
+            except requests.RequestException as e:
+                print(f"❌ Error fetching article {full_url}: {e}")
             except Exception as e:
                 print(f"❌ Error scraping article {full_url}: {e}")
+            finally:
+                time.sleep(1)
 
         # Print 5 random samples from existing DataFrame at the end of each page
         # if len(df) > 0:
@@ -168,6 +183,8 @@ for url_config in start_url:
         #         print(f"  • {row['title'][:50]}... | Category: {row['category']} | ID: {row['id']}")
         #     print()
 
-# Save updated CSV
+# Flush any remaining rows and save updated CSV
+if pending_rows:
+    df = pd.concat([df, pd.DataFrame(pending_rows)], ignore_index=True)
 df.to_csv(csv_filename, index=False)
 print(f"\n✅ Scraping complete. Data saved to {csv_filename}")
